@@ -1,15 +1,24 @@
 package org.ovirt.mobile.movirt.rest;
 
+import android.accounts.AccountManager;
+import android.accounts.AccountManagerFuture;
 import android.content.Context;
-import android.content.SharedPreferences;
+import android.content.Intent;
+import android.os.Bundle;
+import android.os.RemoteException;
 import android.preference.PreferenceManager;
-import android.util.Log;
+import android.text.TextUtils;
 import org.androidannotations.annotations.AfterInject;
 import org.androidannotations.annotations.App;
 import org.androidannotations.annotations.Bean;
 import org.androidannotations.annotations.EBean;
+import org.androidannotations.annotations.RootContext;
+import org.androidannotations.annotations.SystemService;
+import org.androidannotations.annotations.res.StringRes;
 import org.androidannotations.annotations.rest.RestService;
 import org.ovirt.mobile.movirt.MoVirtApp;
+import org.ovirt.mobile.movirt.R;
+import org.ovirt.mobile.movirt.auth.MovirtAuthenticator;
 import org.ovirt.mobile.movirt.model.Vm;
 import org.ovirt.mobile.movirt.model.Cluster;
 import org.ovirt.mobile.movirt.model.Event;
@@ -21,7 +30,6 @@ import org.ovirt.mobile.movirt.model.trigger.Trigger;
 import org.ovirt.mobile.movirt.model.trigger.TriggerResolver;
 import org.ovirt.mobile.movirt.model.trigger.TriggerResolverFactory;
 import org.ovirt.mobile.movirt.sync.EventsHandler;
-import org.ovirt.mobile.movirt.sync.SyncUtils;
 
 import java.math.BigDecimal;
 import java.math.RoundingMode;
@@ -29,18 +37,14 @@ import java.util.ArrayList;
 import java.util.List;
 
 @EBean(scope = EBean.Scope.Singleton)
-public class OVirtClient implements SharedPreferences.OnSharedPreferenceChangeListener {
+public class OVirtClient {
     private static final String TAG = OVirtClient.class.getSimpleName();
+
     private static final String CPU_PERCENTAGE_STAT = "cpu.current.total";
     private static final String TOTAL_MEMORY_STAT = "memory.installed";
     private static final String USED_MEMORY_STAT = "memory.used";
-    // for debugging purposes only
-    public static final String DEFAULT_ENDPOINT = "http://10.0.2.2:8080/ovirt-engine/api";
-    public static final String DEFAULT_USERNAME = "admin@internal";
-    public static final String DEFAULT_PASSWORD = "123456";
-    public static final Boolean DEFAULT_HTTPS = false;
-    public static final Boolean DEFAULT_ADMIN_PRIVILEGE = false;
-    public static final String DEFAULT_POLLING_INTERVAL = "60";
+    public static final String JSESSIONID = "JSESSIONID";
+    public static final String FILTER = "Filter";
 
     @RestService
     OVirtRestClient restClient;
@@ -54,54 +58,92 @@ public class OVirtClient implements SharedPreferences.OnSharedPreferenceChangeLi
     @Bean
     TriggerResolverFactory triggerResolverFactory;
 
-    public void startVm(Vm vm) {
-        restClient.startVm(new Action(), vm.getId());
+    @RootContext
+    Context context;
 
-        SyncUtils.triggerRefresh();
+    @SystemService
+    AccountManager accountManager;
+
+    @Bean
+    MovirtAuthenticator authenticator;
+
+    @App
+    MoVirtApp app;
+
+    @StringRes(R.string.rest_request_failed)
+    String errorMsg;
+
+    public void startVm(final Vm vm) {
+        fireRestRequest(new Request<Object>() {
+            @Override
+            public Object fire() {
+                restClient.startVm(new Action(), vm.getId());
+                return null;
+            }
+        }, null);
     }
 
-    public void stopVm(Vm vm) {
-        restClient.stopVm(new Action(), vm.getId());
+    public void stopVm(final Vm vm) {
+        fireRestRequest(new Request<Object>() {
+            @Override
+            public Object fire() {
+                restClient.stopVm(new Action(), vm.getId());
+                return null;
+            }
+        }, null);
 
-        SyncUtils.triggerRefresh();
     }
 
-    public void rebootVm(Vm vm) {
-        restClient.rebootVm(new Action(), vm.getId());
-
-        SyncUtils.triggerRefresh();
+    public void rebootVm(final Vm vm) {
+        fireRestRequest(new Request<Object>() {
+            @Override
+            public Object fire() {
+                restClient.rebootVm(new Action(), vm.getId());
+                return null;
+            }
+        }, null);
     }
 
-    public ExtendedVm  getVm(Vm vm) {
-        return restClient.getVm(vm.getId());
+    public void getVm(final Vm vm, Response<ExtendedVm> response) {
+        fireRestRequest(new Request<ExtendedVm>() {
+            @Override
+            public ExtendedVm fire() {
+                return restClient.getVm(vm.getId());
+            }
+        }, response);
     }
 
     public ActionTicket getConsoleTicket(Vm vm) {
         return restClient.getConsoleTicket(new Action(), vm.getId());
     }
 
-    public List<Vm> getVms() {
-        Vms loadedVms = null;
-        if (hasAdminPrivilege()) {
-            int maxVms = asIntWithDefault("max_vms_polled", "-1");
-            String query = PreferenceManager.getDefaultSharedPreferences(app).getString("vms_search_query", "");
-            if (!"".equals(query)) {
-                loadedVms = restClient.getVms(query, maxVms);
-            } else {
-                loadedVms = restClient.getVms(maxVms);
+    public void getVms(Response<List<Vm>> response) {
+        fireRestRequest(new Request<List<Vm>>() {
+            @Override
+            public List<Vm> fire() {
+                Vms loadedVms = null;
+                if (authenticator.hasAdminPermissions()) {
+                    int maxVms = asIntWithDefault("max_vms_polled", "-1");
+                    String query = PreferenceManager.getDefaultSharedPreferences(app).getString("vms_search_query", "");
+                    if (!"".equals(query)) {
+                        loadedVms = restClient.getVms(query, maxVms);
+                    } else {
+                        loadedVms = restClient.getVms(maxVms);
+                    }
+
+                } else {
+                    loadedVms = restClient.getVms(-1);
+                }
+
+                if (loadedVms == null) {
+                    return new ArrayList<>();
+                }
+                List<Vm> vms = mapRestWrappers(loadedVms.vm, null);
+                updateVmsStatistics(vms);
+
+                return vms;
             }
-
-        } else {
-            loadedVms = restClient.getVms(-1);
-        }
-
-        if (loadedVms == null) {
-            return new ArrayList<>();
-        }
-        List<Vm> vms = mapRestWrappers(loadedVms.vm, null);
-        updateVmsStatistics(vms);
-
-        return vms;
+        }, response);
     }
 
     private void updateVmsStatistics(List<Vm> vms) {
@@ -112,28 +154,34 @@ public class OVirtClient implements SharedPreferences.OnSharedPreferenceChangeLi
         }
     }
 
-    public VmStatistics getVmStatistics(Vm vm) {
-        VmStatistics res = new VmStatistics();
-        final List<Statistic> statistics = restClient.getVmStatistics(vm.getId()).statistic;
+    public void getVmStatistics(final Vm vm, Response<VmStatistics> response) {
+        fireRestRequest(new Request<VmStatistics>() {
+            @Override
+            public VmStatistics fire() {
+                VmStatistics res = new VmStatistics();
+                final List<Statistic> statistics = restClient.getVmStatistics(vm.getId()).statistic;
 
-        if (statistics != null) {
-            BigDecimal cpu = getStatisticValueByName(CPU_PERCENTAGE_STAT, statistics);
-            BigDecimal totalMemory = getStatisticValueByName(TOTAL_MEMORY_STAT, statistics);
-            BigDecimal usedMemory = getStatisticValueByName(USED_MEMORY_STAT, statistics);
+                if (statistics != null) {
+                    BigDecimal cpu = getStatisticValueByName(CPU_PERCENTAGE_STAT, statistics);
+                    BigDecimal totalMemory = getStatisticValueByName(TOTAL_MEMORY_STAT, statistics);
+                    BigDecimal usedMemory = getStatisticValueByName(USED_MEMORY_STAT, statistics);
 
-            res.setCpuUsage(cpu.doubleValue());
-            if (BigDecimal.ZERO.equals(totalMemory)) {
-                res.setMemoryUsage(0);
-            } else {
-                res.setMemoryUsage(100 * usedMemory.divide(totalMemory, 3, RoundingMode.HALF_UP).doubleValue());
+                    res.setCpuUsage(cpu.doubleValue());
+                    if (BigDecimal.ZERO.equals(totalMemory)) {
+                        res.setMemoryUsage(0);
+                    } else {
+                        res.setMemoryUsage(100 * usedMemory.divide(totalMemory, 3, RoundingMode.HALF_UP).doubleValue());
+                    }
+                    return res;
+                }
+
+                return null;
             }
-            return res;
-        }
+        }, response);
 
-        return null;
     }
 
-    private void updateVmStatistics(Vm vm, TriggerResolver<Vm> resolver) {
+    private void updateVmStatistics(final Vm vm, TriggerResolver<Vm> resolver) {
         List<Trigger<Vm>> triggersForEntity = resolver.getTriggersForEntity(vm);
         if (triggersForEntity.isEmpty()) {
             return;
@@ -152,11 +200,15 @@ public class OVirtClient implements SharedPreferences.OnSharedPreferenceChangeLi
             return;
         }
 
-        VmStatistics statistics = getVmStatistics(vm);
-        if (statistics != null) {
-            vm.setCpuUsage(statistics.getCpuUsage());
-            vm.setMemoryUsage(statistics.getMemoryUsage());
-        }
+        getVmStatistics(vm, new SimpleResponse<VmStatistics>() {
+            @Override
+            public void onResponse(VmStatistics statistics) throws RemoteException {
+                if (statistics != null) {
+                    vm.setCpuUsage(statistics.getCpuUsage());
+                    vm.setMemoryUsage(statistics.getMemoryUsage());
+                }
+            }
+        });
     }
 
     private BigDecimal getStatisticValueByName(String name, List<Statistic> statistics) {
@@ -168,128 +220,179 @@ public class OVirtClient implements SharedPreferences.OnSharedPreferenceChangeLi
         return BigDecimal.ZERO;
     }
 
-    public List<Cluster> getClusters() {
-        Clusters loadedClusters = restClient.getClusters();
-        if (loadedClusters == null) {
-            return new ArrayList<>();
-        }
-
-        return mapRestWrappers(loadedClusters.cluster, null);
-    }
-
-    public List<Event> getEventsSince(final int lastEventId) {
-        Events loadedEvents = null;
-
-        if (hasAdminPrivilege()) {
-            int maxEventsStored = asIntWithDefault("max_events_stored", EventsHandler.MAX_EVENTS_LOCALLY);
-
-            String query = PreferenceManager.getDefaultSharedPreferences(app).getString("events_search_query", "");
-            if (!"".equals(query)) {
-                loadedEvents = restClient.getEventsSince(Integer.toString(lastEventId), query, maxEventsStored);
-            } else {
-                loadedEvents = restClient.getEventsSince(Integer.toString(lastEventId), maxEventsStored);
-            }
-        } else {
-            loadedEvents = restClient.getEventsSince(Integer.toString(lastEventId), -1);
-        }
-
-
-        if (loadedEvents == null) {
-            return new ArrayList<>();
-        }
-
-        return mapRestWrappers(loadedEvents.event, new WrapPredicate<org.ovirt.mobile.movirt.rest.Event>() {
+    public void getClusters(Response<List<Cluster>> response) {
+        fireRestRequest(new Request<List<Cluster>>() {
             @Override
-            public boolean toWrap(org.ovirt.mobile.movirt.rest.Event entity) {
-                return entity.id > lastEventId;
+            public List<Cluster> fire() {
+                Clusters loadedClusters = restClient.getClusters();
+                if (loadedClusters == null) {
+                    return new ArrayList<>();
+                }
+
+                return mapRestWrappers(loadedClusters.cluster, null);
             }
-        });
+        }, response);
     }
 
-    @App
-    MoVirtApp app;
+    public String login(String apiUrl, String username, String password, boolean disableHttps, boolean hasAdminPrivileges) {
+        restClient.setRootUrl(apiUrl);
+        restClient.setHttpBasicAuth(username, password);
+        restClient.setCookie("JSESSIONID", "");
+        requestFactory.setIgnoreHttps(disableHttps);
+        restClient.setHeader(FILTER, Boolean.toString(!hasAdminPrivileges));
+        restClient.login();
+        String sessionId = restClient.getCookie("JSESSIONID");
+        restClient.setHttpBasicAuth("", "");
+        return sessionId;
+    }
+
+    public void getEventsSince(final int lastEventId, Response<List<Event>> response) {
+        fireRestRequest(new Request<List<Event>>() {
+            @Override
+            public List<Event> fire() {
+                Events loadedEvents = null;
+
+                if (authenticator.hasAdminPermissions()) {
+                    int maxEventsStored = asIntWithDefault("max_events_stored", EventsHandler.MAX_EVENTS_LOCALLY);
+
+                    String query = PreferenceManager.getDefaultSharedPreferences(app).getString("events_search_query", "");
+                    if (!"".equals(query)) {
+                        loadedEvents = restClient.getEventsSince(Integer.toString(lastEventId), query, maxEventsStored);
+                    } else {
+                        loadedEvents = restClient.getEventsSince(Integer.toString(lastEventId), maxEventsStored);
+                    }
+                } else {
+                    loadedEvents = restClient.getEventsSince(Integer.toString(lastEventId), -1);
+                }
+
+
+                if (loadedEvents == null) {
+                    return new ArrayList<>();
+                }
+
+                return mapRestWrappers(loadedEvents.event, new WrapPredicate<org.ovirt.mobile.movirt.rest.Event>() {
+                    @Override
+                    public boolean toWrap(org.ovirt.mobile.movirt.rest.Event entity) {
+                        return entity.id > lastEventId;
+                    }
+                });
+            }
+        }, response);
+    }
 
     @AfterInject
     void initClient() {
         restClient.setRestErrorHandler(restErrorHandler);
         restClient.setHeader("Accept-Encoding", "gzip");
-        updateConnection();
+        restClient.setHeader("Session-TTL", "120"); // 2h
+        restClient.setHeader("Prefer", "persistent-auth, csrf-protection");
+
         restClient.getRestTemplate().setRequestFactory(requestFactory);
-        registerSharedPreferencesListener();
     }
 
-    private void updateConnection() {
-        updateRootUrlFromSettings();
-        updateAuthenticationFromSettings();
-        updateDisableHttpsChecking();
-        updateAdminPrivilegeStatus();
-        updatePollingInterval();
-        SyncUtils.triggerRefresh();
+    /**
+     * has to be synced because of error handling - otherwise it would not be possible to bind the error
+     */
+    private synchronized <T> void fireRestRequest(final Request<T> request, final Response<T> response) {
+        doFireRequest(request, response, 0);
     }
 
-    private void updateRootUrlFromSettings() {
-        String endpoint = PreferenceManager.getDefaultSharedPreferences(app).getString("endpoint", DEFAULT_ENDPOINT);
-        restClient.setRootUrl(endpoint);
-        Log.i(TAG, "Updating root url to: " + endpoint);
-    }
+    private <T> void doFireRequest(Request<T> request, Response<T> response, int numOfTries) {
+        AccountManagerFuture<Bundle> resp = accountManager.getAuthToken(MovirtAuthenticator.MOVIRT_ACCOUNT, MovirtAuthenticator.AUTH_TOKEN_TYPE, null, true, null, null);
 
-    private void updateAuthenticationFromSettings() {
-        String username = PreferenceManager.getDefaultSharedPreferences(app).getString("username", DEFAULT_USERNAME);
-        String password = PreferenceManager.getDefaultSharedPreferences(app).getString("password", DEFAULT_PASSWORD);
-        Log.i(TAG, "Updating username to: " + username);
-        Log.i(TAG, "Updating password to: " + password);
-        restClient.setHttpBasicAuth(username, password);
-    }
+        boolean success = false;
 
-    private void updateAdminPrivilegeStatus() {
-        Boolean adminPrivilegeStatus = hasAdminPrivilege();
-        Log.i(TAG, "Updating admin privilege status to: " + adminPrivilegeStatus);
-        restClient.setHeader("Filter", String.valueOf(!adminPrivilegeStatus));
-    }
-
-    private void updatePollingInterval() {
-        int pollingInterval = asIntWithDefault("polling_interval", DEFAULT_POLLING_INTERVAL);
-        Log.i(TAG,"Updating Polling Interval to :" + pollingInterval);
-        SyncUtils.updatePollingInterval(pollingInterval);
-    }
-
-    private void updateDisableHttpsChecking() {
-        Boolean disableHttpsChecking = PreferenceManager.getDefaultSharedPreferences(app).getBoolean("disableHttpsChecking", DEFAULT_HTTPS);
-        requestFactory.setIgnoreHttps(disableHttpsChecking);
-        Log.i(TAG, "Https Disabled updated: " + disableHttpsChecking);
-    }
-
-    private void registerSharedPreferencesListener() {
-        app.getSharedPreferences("MyPrefs", Context.MODE_MULTI_PROCESS).registerOnSharedPreferenceChangeListener(this);
-        PreferenceManager.getDefaultSharedPreferences(app).registerOnSharedPreferenceChangeListener(this);
-    }
-
-    @Override
-    public void onSharedPreferenceChanged(SharedPreferences sharedPreferences, String key) {
-        if (key.equals("endpoint")) {
-            updateRootUrlFromSettings();
-        }
-        if (key.equals("username") || key.equals("password")) {
-            updateAuthenticationFromSettings();
-        }
-        if (key.equals("admin_privilege")){
-            updateAdminPrivilegeStatus();
-        }
-        if (key.equals("polling_interval")){
-            updatePollingInterval();
-        }
-        if (key.equals("disableHttpsChecking")) {
-            updateDisableHttpsChecking();
+        if (response != null) {
+            response.before();
         }
 
-        Log.i(TAG, key + " changed");
-        SyncUtils.triggerRefresh();
+        try {
+            Bundle result = resp.getResult();
+            if (result.containsKey(AccountManager.KEY_AUTHTOKEN)) {
+                String authToken = result.getString(AccountManager.KEY_AUTHTOKEN);
+                UnauthorizedHandler unauthorizedCallback = new UnauthorizedHandler(authToken);
+                if (numOfTries == 0) {
+                    restErrorHandler.setUnauthorizedCallback(unauthorizedCallback);
+                }
+
+                if (TextUtils.isEmpty(authToken)) {
+                    unauthorizedCallback.onUnauthorized();
+                } else {
+                    restClient.setCookie(JSESSIONID, authToken);
+                    updateClientBeforeCall();
+                    T restResponse = request.fire();
+                    success = true;
+                    if (restResponse != null) {
+                        response.onResponse(restResponse);
+                    }
+                }
+            } else if (result.containsKey(AccountManager.KEY_INTENT)) {
+                Intent accountAuthenticatorResponse = result.getParcelable(AccountManager.KEY_INTENT);
+                Intent editConnectionIntent = new Intent(MoVirtApp.NO_CONNECTION_SPEFICIED);
+                editConnectionIntent.putExtra(AccountManager.KEY_INTENT, accountAuthenticatorResponse);
+                context.sendBroadcast(editConnectionIntent);
+            }
+        } catch (Exception e) {
+            fireConnectionError(e);
+        } finally {
+            restErrorHandler.setUnauthorizedCallback(null);
+            if (!success && response != null) {
+                response.onError();
+            }
+        }
+    }
+
+    private void updateClientBeforeCall() {
+        restClient.setHeader(FILTER, Boolean.toString(!authenticator.hasAdminPermissions()));
+        requestFactory.setIgnoreHttps(authenticator.disableHttps());
+        restClient.setRootUrl(authenticator.getApiUrl());
+    }
+
+    class UnauthorizedHandler<T> implements ErrorHandler.UnauthorizedCallback {
+
+        private String authToken;
+
+        private Request<T> request;
+        private Response<T> response;
+
+        UnauthorizedHandler(String authToken) {
+            this.authToken = authToken;
+        }
+
+        @Override
+        public void onUnauthorized() {
+            accountManager.invalidateAuthToken(MovirtAuthenticator.AUTH_TOKEN_TYPE, authToken);
+            doFireRequest(request, response, 1);
+        }
+    }
+
+    public static interface Request<T> {
+        T fire();
+    }
+
+    public static interface Response<T> {
+        void before();
+
+        void onResponse(T t) throws RemoteException;
+
+        void onError();
+    }
+
+    public static abstract class SimpleResponse<T> implements Response<T> {
+
+        @Override
+        public void before() {
+            // do nothing
+        }
+
+        @Override
+        public void onError() {
+            // do nothing
+        }
     }
 
     private static interface WrapPredicate<E> {
         boolean toWrap(E entity);
-
-
     }
 
     private static <E, R extends RestEntityWrapper<E>> List<E> mapRestWrappers(List<R> wrappers, WrapPredicate<R> predicate) {
@@ -314,7 +417,11 @@ public class OVirtClient implements SharedPreferences.OnSharedPreferenceChangeLi
         }
     }
 
-    private Boolean hasAdminPrivilege() {
-        return PreferenceManager.getDefaultSharedPreferences(app).getBoolean("admin_privilege", DEFAULT_ADMIN_PRIVILEGE);
+    private void fireConnectionError(Exception e) {
+        final String msg = String.format(errorMsg, e.getMessage());
+
+        Intent intent = new Intent(MoVirtApp.CONNECTION_FAILURE);
+        intent.putExtra(MoVirtApp.CONNECTION_FAILURE_REASON, msg);
+        context.sendBroadcast(intent);
     }
 }

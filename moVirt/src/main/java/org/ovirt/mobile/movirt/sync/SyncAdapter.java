@@ -115,13 +115,21 @@ public class SyncAdapter extends AbstractThreadedSyncAdapter {
         batch = provider.batch();
         notificationCount = 0;
 
-        final List<Vm> remoteVms = oVirtClient.getVms();
-        final List<Cluster> remoteClusters = oVirtClient.getClusters();
+        oVirtClient.getVms(new OVirtClient.SimpleResponse<List<Vm>>() {
+            @Override
+            public void onResponse(final List<Vm> remoteVms) throws RemoteException {
+                oVirtClient.getClusters(new OVirtClient.SimpleResponse<List<Cluster>>() {
+                    @Override
+                    public void onResponse(List<Cluster> remoteClusters) throws RemoteException {
+                        updateLocalEntities(remoteClusters, Cluster.class);
+                        updateLocalEntities(remoteVms, Vm.class);
 
-        updateLocalEntities(remoteClusters, Cluster.class);
-        updateLocalEntities(remoteVms, Vm.class);
+                        applyBatch();
+                    }
+                });
+            }
+        });
 
-        applyBatch();
     }
 
     private void applyBatch() {

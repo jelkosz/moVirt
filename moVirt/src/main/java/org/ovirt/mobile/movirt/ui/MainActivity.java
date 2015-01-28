@@ -1,5 +1,11 @@
 package org.ovirt.mobile.movirt.ui;
 
+import android.accounts.Account;
+import android.accounts.AccountManager;
+import android.accounts.AccountManagerCallback;
+import android.accounts.AccountManagerFuture;
+import android.accounts.AuthenticatorException;
+import android.accounts.OperationCanceledException;
 import android.app.Activity;
 import android.app.Dialog;
 import android.app.LoaderManager;
@@ -7,6 +13,8 @@ import android.content.Intent;
 import android.content.Loader;
 import android.database.Cursor;
 import android.os.Bundle;
+import android.os.Parcelable;
+import android.os.RemoteException;
 import android.support.v4.widget.DrawerLayout;
 import android.text.Editable;
 import android.text.TextWatcher;
@@ -26,6 +34,7 @@ import android.widget.Toast;
 
 import org.androidannotations.annotations.AfterViews;
 import org.androidannotations.annotations.App;
+import org.androidannotations.annotations.Background;
 import org.androidannotations.annotations.Bean;
 import org.androidannotations.annotations.EActivity;
 import org.androidannotations.annotations.FragmentById;
@@ -39,6 +48,7 @@ import org.androidannotations.annotations.ViewById;
 import org.androidannotations.annotations.res.StringRes;
 import org.ovirt.mobile.movirt.MoVirtApp;
 import org.ovirt.mobile.movirt.R;
+import org.ovirt.mobile.movirt.auth.MovirtAuthenticator;
 import org.ovirt.mobile.movirt.model.Cluster;
 import org.ovirt.mobile.movirt.model.EntityMapper;
 import org.ovirt.mobile.movirt.model.Vm;
@@ -46,10 +56,14 @@ import org.ovirt.mobile.movirt.model.trigger.Trigger;
 import org.ovirt.mobile.movirt.provider.OVirtContract;
 import org.ovirt.mobile.movirt.provider.ProviderFacade;
 import org.ovirt.mobile.movirt.provider.SortOrder;
+import org.ovirt.mobile.movirt.rest.OVirtClient;
 import org.ovirt.mobile.movirt.sync.SyncAdapter;
 import org.ovirt.mobile.movirt.sync.SyncUtils;
 import org.ovirt.mobile.movirt.ui.triggers.EditTriggersActivity;
 import org.ovirt.mobile.movirt.ui.triggers.EditTriggersActivity_;
+
+import java.io.IOException;
+import java.util.List;
 
 import static org.ovirt.mobile.movirt.provider.OVirtContract.Vm.CLUSTER_ID;
 import static org.ovirt.mobile.movirt.provider.OVirtContract.Vm.NAME;
@@ -92,6 +106,9 @@ public class MainActivity extends Activity implements ClusterDrawerFragment.Clus
 
     @Bean
     ProviderFacade provider;
+
+    @Bean
+    OVirtClient client;
 
     @InstanceState
     String selectedClusterId;
@@ -271,15 +288,15 @@ public class MainActivity extends Activity implements ClusterDrawerFragment.Clus
     }
 
     @OptionsItem(R.id.action_refresh)
+    @Background
     void refresh() {
         Log.d(TAG, "Refresh button clicked");
-
         SyncUtils.triggerRefresh();
     }
 
     @OptionsItem(R.id.action_settings)
     void showSettings() {
-        startActivity(new Intent(this, SettingsActivity.class));
+        startActivity(new Intent(this, AuthenticatorActivity_.class));
     }
 
     @OptionsItem(R.id.action_edit_triggers)
@@ -333,8 +350,10 @@ public class MainActivity extends Activity implements ClusterDrawerFragment.Clus
         vmsProgress.setVisibility(syncing ? View.VISIBLE : View.GONE);
     }
 
-    @Receiver(actions = MoVirtApp.CONNECTION_FAILURE, registerAt = Receiver.RegisterAt.OnResumeOnPause)
-    void connectionFailure(@Receiver.Extra(MoVirtApp.CONNECTION_FAILURE_REASON) String reason) {
-        Toast.makeText(MainActivity.this, R.string.disconnected + " " + reason, Toast.LENGTH_LONG).show();
+    @Receiver(actions = MoVirtApp.NO_CONNECTION_SPEFICIED, registerAt = Receiver.RegisterAt.OnResumeOnPause)
+    void noConnection(@Receiver.Extra(AccountManager.KEY_INTENT) Parcelable toOpen) {
+        // todo do not open it right away - open a dialog asking for it
+        startActivity((Intent) toOpen);
     }
+
 }

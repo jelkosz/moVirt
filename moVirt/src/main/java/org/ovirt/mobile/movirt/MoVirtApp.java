@@ -27,6 +27,8 @@ public class MoVirtApp extends Application {
 
     public static final String SYNCING = "org.ovirt.mobile.movirt.SYNCING";
 
+    public static final String NO_CONNECTION_SPEFICIED = "org.ovirt.mobile.movirt.NO_CONNECTION_SPEFICIED";
+
     private static Context context;
 
     public static Context getContext() {
@@ -36,10 +38,7 @@ public class MoVirtApp extends Application {
     @Override
     public void onCreate() {
         super.onCreate();
-
         context = this;
-
-        SyncUtils.createSyncAccount(this);
     }
 
     public boolean endpointConfigured() {
