@@ -7,6 +7,7 @@ import android.content.Loader;
 import android.database.Cursor;
 import android.net.Uri;
 import android.os.Bundle;
+import android.os.RemoteException;
 import android.util.Log;
 import android.view.View;
 import android.widget.Button;
@@ -22,9 +23,11 @@ import org.androidannotations.annotations.EActivity;
 import org.androidannotations.annotations.FragmentById;
 import org.androidannotations.annotations.OptionsItem;
 import org.androidannotations.annotations.OptionsMenu;
+import org.androidannotations.annotations.Receiver;
 import org.androidannotations.annotations.UiThread;
 import org.androidannotations.annotations.ViewById;
 import org.androidannotations.annotations.res.StringRes;
+import org.ovirt.mobile.movirt.MoVirtApp;
 import org.ovirt.mobile.movirt.R;
 import org.ovirt.mobile.movirt.model.EntityMapper;
 import org.ovirt.mobile.movirt.model.VmStatistics;
@@ -106,6 +109,8 @@ public class VmDetailActivity extends Activity implements LoaderManager.LoaderCa
 
         hideProgressBar();
         Uri vmUri = getIntent().getData();
+
+
         args = new Bundle();
         args.putParcelable(VM_URI, vmUri);
         getLoaderManager().initLoader(0, args, this);
@@ -144,29 +149,34 @@ public class VmDetailActivity extends Activity implements LoaderManager.LoaderCa
     @Click(R.id.vncButton)
     @Background
     void openVncConsole() {
-        String address, port, type;
-        Intent intent;
         showProgressBar();
-        ExtendedVm freshVm = client.getVm(vm);
-        ActionTicket ticket = client.getConsoleTicket(vm);
-        address = freshVm.display.address;
-        port = freshVm.display.port;
-        type = freshVm.display.type;
-        hideProgressBar();
-        if ("vnc".equals(type)) {
-            try {
-                intent = new Intent(Intent.ACTION_VIEW).setType("application/vnd.vnc").setData(Uri.parse(type + "://" + address + ":" + port + "?VncPassword=" + ticket.ticket.value));
-                startActivity(intent);
+
+        client.getVm(vm, new OVirtClient.SimpleResponse<ExtendedVm>() {
+            @Override
+            public void onResponse(ExtendedVm freshVm) throws RemoteException {
+                String address, port, type;
+                Intent intent;
+                ActionTicket ticket = client.getConsoleTicket(vm);
+                address = freshVm.display.address;
+                port = freshVm.display.port;
+                type = freshVm.display.type;
+                hideProgressBar();
+                if ("vnc".equals(type)) {
+                    try {
+                        intent = new Intent(Intent.ACTION_VIEW).setType("application/vnd.vnc").setData(Uri.parse(type + "://" + address + ":" + port + "?VncPassword=" + ticket.ticket.value));
+                        startActivity(intent);
+                    }
+                    catch (Exception e) {
+                        String msg = "moVirt failed to open bVnc. Check if bVnc is installed.";
+                        makeToast(msg);
+                    }
+                }
+                else {
+                    String msg = "The console is not a VNC console. Check the type of console.";
+                    makeToast(msg);
+                }
             }
-            catch (Exception e) {
-                String msg = "moVirt failed to open bVnc. Check if bVnc is installed.";
-                makeToast(msg);
-            }
-        }
-        else {
-            String msg = "The console is not a VNC console. Check the type of console.";
-            makeToast(msg);
-        }
+        });
     };
 
     @UiThread
@@ -256,7 +266,7 @@ public class VmDetailActivity extends Activity implements LoaderManager.LoaderCa
             displayView.setText(vm.display.type);
         }
         else {
-            displayView.setText("NA");
+            displayView.setText("N/A");
         }
 
         updateCommandButtons(vm);
@@ -269,13 +279,29 @@ public class VmDetailActivity extends Activity implements LoaderManager.LoaderCa
         rebootButton.setClickable(Vm.Command.REBOOT.canExecute(status));
     }
 
-    @Background
-    void loadAdditionalVmData(Vm vm) {
-        showProgressBar();
-        ExtendedVm loadedVm = oVirtClient.getVm(vm);
-        VmStatistics statistics = oVirtClient.getVmStatistics(vm);
-        hideProgressBar();
+    @Receiver(actions = MoVirtApp.CONNECTION_FAILURE, registerAt = Receiver.RegisterAt.OnResumeOnPause)
+    void connectionFailure(@Receiver.Extra(MoVirtApp.CONNECTION_FAILURE_REASON) String reason) {
+        Toast.makeText(VmDetailActivity.this, R.string.rest_req_failed + " " + reason, Toast.LENGTH_LONG).show();
+    }
 
-        renderVm(loadedVm, statistics);
+    @Background
+    void loadAdditionalVmData(final Vm vm) {
+        showProgressBar();
+
+        oVirtClient.getVm(vm, new OVirtClient.SimpleResponse<ExtendedVm>() {
+            @Override
+            public void onResponse(final ExtendedVm loadedVm) throws RemoteException {
+                oVirtClient.getVmStatistics(vm, new OVirtClient.SimpleResponse<VmStatistics>() {
+                    @Override
+                    public void onResponse(VmStatistics vmStatistics) throws RemoteException {
+                        hideProgressBar();
+
+                        renderVm(loadedVm, vmStatistics);
+                    }
+                });
+
+            }
+        });
+
     }
 }

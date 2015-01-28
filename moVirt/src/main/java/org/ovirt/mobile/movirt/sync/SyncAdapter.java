@@ -22,6 +22,7 @@ import org.androidannotations.annotations.EBean;
 import org.androidannotations.annotations.RootContext;
 import org.androidannotations.annotations.SystemService;
 import org.ovirt.mobile.movirt.MoVirtApp;
+import org.ovirt.mobile.movirt.auth.MovirtAuthenticator;
 import org.ovirt.mobile.movirt.model.Cluster;
 import org.ovirt.mobile.movirt.model.EntityMapper;
 import org.ovirt.mobile.movirt.model.OVirtEntity;
@@ -63,8 +64,8 @@ public class SyncAdapter extends AbstractThreadedSyncAdapter {
     @Bean
     EventsHandler eventsHandler;
 
-    @App
-    MoVirtApp app;
+    @Bean
+    MovirtAuthenticator authenticator;
 
     public static volatile boolean inSync = false;
 
@@ -87,8 +88,8 @@ public class SyncAdapter extends AbstractThreadedSyncAdapter {
             return;
         }
 
-        if (!app.endpointConfigured()) {
-            Log.d(TAG, "Endpoint not configured, not performing sync");
+        if (!authenticator.accountConfigured()) {
+            Log.d(TAG, "Account not configured, not performing sync");
             return;
         }
 
@@ -115,13 +116,21 @@ public class SyncAdapter extends AbstractThreadedSyncAdapter {
         batch = provider.batch();
         notificationCount = 0;
 
-        final List<Vm> remoteVms = oVirtClient.getVms();
-        final List<Cluster> remoteClusters = oVirtClient.getClusters();
+        oVirtClient.getVms(new OVirtClient.SimpleResponse<List<Vm>>() {
+            @Override
+            public void onResponse(final List<Vm> remoteVms) throws RemoteException {
+                oVirtClient.getClusters(new OVirtClient.SimpleResponse<List<Cluster>>() {
+                    @Override
+                    public void onResponse(List<Cluster> remoteClusters) throws RemoteException {
+                        updateLocalEntities(remoteClusters, Cluster.class);
+                        updateLocalEntities(remoteVms, Vm.class);
 
-        updateLocalEntities(remoteClusters, Cluster.class);
-        updateLocalEntities(remoteVms, Vm.class);
+                        applyBatch();
+                    }
+                });
+            }
+        });
 
-        applyBatch();
     }
 
     private void applyBatch() {
